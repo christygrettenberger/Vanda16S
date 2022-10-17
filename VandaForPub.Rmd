@@ -7,13 +7,17 @@ These data were collected in 2013 with goal(s) of determining whether different 
 *Hypothesis 2*:Microbial communities differ in between 19 and 31 meters depth.
 *Null 2* There are no difference in microbial community composition in the two depths. 
 
-The fact of the matter is that we sampled different features and in different depths and these will interact, so our stats will have to account for that. As such the question we are really asking is "When controlling for depth, do the different features of a pinnacle contain different microbial communities" and "When controlling for feature, do communities at different depths differ?" 
+We will use dada2 to analyze the 16S rRNA data following the dada2 tutorial.
 
-set working directory, load packages, and point to data
-
+First, set working directory, load packages, and point to data
 ```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+#BiocManager::install("dada2", version = "3.11")
+setwd("/Volumes/Seagate Portable Drive/AntarcticLakes_16S")
 library(dada2); packageVersion("dada2")
 path<-"../Vanda_2013/trimmed_fastq/paired/"
+
 list.files(path)
 ```
 
@@ -30,7 +34,7 @@ plotQualityProfile(V2013_fnFs[3:4])
 plotQualityProfile(V2013_fnRs[3:4])
 ```
 
-alright, so, these aren't great. The quality in the forward reads drops around 150 and the quality of the reverse reads is much better and drops around 225 bp. Usually reverse reads are worse, so this is a bit odd.
+The quality in the forward reads drops around 150 and the quality of the reverse reads is much better and drops around 225 bp. Usually reverse reads are worse, so this is a bit odd (and relevant later). That's okay, we should trim the poor quality sections and retain the good sections and reads.
 ```{r}
 V2013_filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
 V2013_filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
@@ -45,16 +49,16 @@ head(V2013_out)
 
 This looks okay. We lost a lot of data in some samples (e.g. LV-19-MP5-BRO-1), but it is better to proceed with fewer, high-quality data than more, low-quality data.
 
-Now we need to learn error rates so that they can be applied to correct the data. This may take awhile. 
+Now we need to learn error rates so that they can be applied to correct the data.
 ```{r}
 V2013_errF <- learnErrors(V2013_filtFs, multithread=TRUE)
 V2013_errR <- learnErrors(V2013_filtRs, multithread=TRUE)
-plotErrors(V2013_errF, nominalQ=TRUE)
+plotErrors(V2013_errF, nominalQ=TRUE)0
 ```
 
 These look pretty good - the black lines match the error rates much better than the red (default) metrics.
 
-now we apply the learned error rates to our sequences and merge the forward and reverse sequences to figure out how many unique sequences there would be if there were no errors. This may also take awhile. 
+Now we apply the learned error rates to our sequences and merge the forward and reverse sequences to figure out how many unique sequences there would be if there were no errors.
 
 ```{r}
 V2013_dadaFs <- dada(V2013_filtFs, err=V2013_errF, multithread=TRUE)
@@ -69,7 +73,7 @@ V2013_seqtab <- makeSequenceTable(V2013_mergers)
 dim(V2013_seqtab)
 ```
 
-We have 154 samples with 4087 unique sequences. That seems reasonable. 
+We have 152 samples with 4089 unique sequences. That seems reasonable. 
 
 ```{r}
 table(nchar(getSequences(V2013_seqtab)))
@@ -84,19 +88,18 @@ now lets just check to see what proportion of reads we removed
 dim(V2013_seqtab2)
 sum(V2013_seqtab2)/sum(V2013_seqtab)
 ```
-We removed ~155 sequences but only ~0.05% of the reads. 
+We removed ~155 sequences but only ~0.05% of the reads. Good.
 
-now we need to remove chimeras
-now remove chimeras
+Now we need to remove chimeras
 ```{r}
 V2013_seqtab.nochim <- removeBimeraDenovo(V2013_seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
 dim(V2013_seqtab.nochim)
 sum(V2013_seqtab.nochim)/sum(V2013_seqtab)
 ```
 
-okay, we have 232 bimearas but again they only make up ~0.05% of the community. 
+Okay, we have 238 bimearas but again they only make up ~0.05% of the community. Good.
 
-Now we need to classify the sequences. We are including trying the reverse compliment. This is becasue they fail to classify without this and it would make sense for them to be RC because the R reads have quality scores more similar to F reads above. 
+Now we need to classify the sequences. We are including trying the reverse compliment. This is becasue they fail to classify without this and it would make sense for them to be reverse complemented because the reverse reads have quality scores more similar to forward reads above (I told you this would be relevant later). 
 ```{r}
 
 taxa <- assignTaxonomy(V2013_seqtab.nochim, "../../Methods/silva_nr_v138_train_set.fa.gz", multithread=FALSE,tryRC=TRUE)
@@ -107,7 +110,7 @@ rownames(taxa.print) <- NULL
 head(taxa.print)
 
 ```
-okay, now we can do analyses in phyloseq
+Now we can do analyses in phyloseq
 
 First I need to open the packages and make the dada2 output readable to phyloseq
 
@@ -119,12 +122,7 @@ library(ggplot2)
 library("ape")
 theme_set(theme_bw())
 
-new.names <- paste0("ASV", seq(ntaxa(ps))) # Define new names ASV1, ASV2, ...
-seqs <- taxa_names(ps) # Store sequences
-names(seqs) <- new.names # Make map from ASV1 to full sequence
-taxa_names(ps) <- new.names # Rename to human-friendly format
-
-samdf<-read.csv("V2013_Metadata.csv", row.names=1)
+samdf<-read.csv("../VandaMetadata.csv", row.names=1)
 samples.out <- rownames(V2013_seqtab.nochim)
 rownames(samdf) <- samples.out
 
@@ -139,12 +137,13 @@ taxa_names(ps) <- new.names # Rename to human-friendly format
 ```
 
 now remove samples with less than 1000 sequences
-and those that are not bacteria
+and reads that are not bacteria
 
 ```{r}
-V2013_large<- prune_samples(sample_sums(ps)>=1000, ps)
-V2013_bac<-subset_taxa(V2013_large, Kingdom=="Bacteria")
-V2013_bacteria<-subset_taxa(V2013_bac, Order!="Chloroplast")
+ps_large<- prune_samples(sample_sums(ps)>=1000, ps)
+ps_bac<-subset_taxa(ps_large, Kingdom=="Bacteria")
+ps_bacter<-subset_taxa(ps_bac, (Order!="Chloroplast") | is.na(Order))
+ps_bacteria<-subset_taxa(ps_bac, (Family!="Mitochondria") | is.na(Family))
 ```
 
 and summarize the data
@@ -157,7 +156,7 @@ summarize_phyloseq(V2013_bacteria)
 
 Okay, so, we set out our hypotheses at the beginning and how we would test them. Now is the time that we can do that. We are going to use Adonis2 to determine whether communities differ significantly. 
 
-We want to compare the subsamples from each depth (e.g. pink 19 to pink 31) and the subsamples within each depth to one another (e.g. pink 19 to brown 19) but we don't want to cross compare (e.g. we don't care about pink 19 comparing to brown 31) so we will do all possible pairwise comparisons using adonis.pair and then we will pull out only those that we care about and use a correction to correct for multiple comparisons. We also don't care at all about webs because there are too few samples to be concerned with. 
+We want to compare the subsamples from each depth (e.g. pink 19 to pink 31) and the subsamples within each depth to one another (e.g. pink 19 to brown 19) but we don't want to cross compare (e.g. we don't care about pink 19 comparing to brown 31) so we will do all possible pairwise comparisons using adonis.pair (for ease) and then we will pull out only those that we care about and use a correction to correct for multiple comparisons. 
 
 We also have to deal with potential pseudoreplication becasue for some pinnacles, multiple samples were collected of each type. To do so, we will add pinnacle ID as a stratum for Adonis2. There is probably a cleaner way to do this command wise, but hey-o we'll do it the long way. 
 
@@ -175,10 +174,10 @@ no_reps_ps = subset_samples(V2013_relabund, replicate=="no")
 #now we make distance matrix 
 no_reps_frame = as(sample_data(no_reps_ps), "data.frame")
 d = phyloseq::distance(no_reps_ps, "bray")
-no_reps_adonis_subsample_depth = adonis.pair(d, no_reps_frame$depth_subsample)
+no_reps_adonis_subsample_depth = adonis.pair(d, as.factor(no_reps_frame$depth_subsample))
 no_reps_adonis_subsample_depth
 #and we subsample for only the pairwise comparisons we are interested in
-no_reps_adonis_subsample_depth_of_interest = no_reps_adonis_subsample_depth[c(13,14,16,18,20,22,25,27,29,31,33,34,35,37,39,41,44,46,48,50,51,52,54,56,59,61,63,64,65,67,70,72,73,74,77,78),]
+no_reps_adonis_subsample_depth_of_interest = no_reps_adonis_subsample_depth[c(2,4, 6, 8, 10, 12, 13,14,16,18,20,22,25,27,29,31,33,34,35,37,39,41,44,46,48,50,51,52,54,56,59,61,63,64,65,67,70,72,73,74,77,78),]
 #now we are going to adjust for multiple comparisons using the p-adjust function
 p_values_adjusted<-as.data.frame(p.adjust(no_reps_adonis_subsample_depth_of_interest$P.value, method="BH"))
 names(p_values_adjusted) = "p_value_adjusted"
@@ -189,10 +188,11 @@ adonis_of_interest_adjusted = as.data.frame(c(no_reps_adonis_subsample_depth_of_
 write.table(adonis_of_interest_adjusted, file="Adonis_p_values_final.csv", sep=",")
 
 ```
-okay, lets see what species are driving the differences between communities that do differ significantly. We can use simper for that. We're really only interested in the cyanobacteria because those are the taxa that we would expect to be different due to the light environment and as the primary producers. We'll parse those out at a later step. 
+okay, lets see what species are driving the differences between communities that do differ significantly. We can use simper for that. We're especially interested in the cyanobacteria because those are the taxa that we would expect to be different due to the light environment and as the primary producers. We'll parse those out at a later step. Here we will only look at species that 1) are significantly different between groups (p < 0.05) and who contribute to 1% or more of the dissimilarity between communities (average > 0.009999999999) 
 
 
 First lets look at differences between the same layers, but at different depths
+
 ```{r depth simper}
 tip_ps<- subset_samples(no_reps_ps, subsample=="2tip")
 OTUs = as(otu_table(tip_ps), "matrix")
@@ -232,7 +232,8 @@ if(taxa_are_rows(pink_ps)){OTUs <- t(OTUs)}
 OTUs = as.data.frame(OTUs)
 pink_simper <- simper(OTUs, pink_ps@sam_data$depth_word, permutations = 100)
 pink_simper<-as.data.frame(pink_simper$"shallow_deep")
-relevant_pink_simper<-subset(pink_simper, pink_simper$average > 0.009999999999 & pink_simper$p < 0.050) #there are none
+relevant_pink_simper<-subset(pink_simper, pink_simper$average > 0.009999999999 & pink_simper$p < 0.050)
+
 
 beige_ps<- subset_samples(no_reps_ps, subsample=="7beige")
 OTUs = as(otu_table(beige_ps), "matrix")
@@ -247,12 +248,39 @@ Now let's do the differences between different layers at 19 meters. We are limit
 ```{r 19 simper}
 bacteria_19_ps<- subset_samples(no_reps_ps, depth=="19")
 
+web_19_ps<- subset_samples(bacteria_19_ps, subsample== "1web")
 tip_19_ps<- subset_samples(bacteria_19_ps, subsample== "2tip")
 ridge_19_ps<- subset_samples(bacteria_19_ps, subsample== "3ridge")
 brown_19_ps<- subset_samples(bacteria_19_ps, subsample== "4brown")
 green_19_ps<- subset_samples(bacteria_19_ps, subsample== "5green")
 pink_19_ps<- subset_samples(bacteria_19_ps, subsample== "6pink")
 beige_19_ps<- subset_samples(bacteria_19_ps, subsample== "7beige")
+
+
+web_green_19_ps = merge_phyloseq(web_19_ps,green_19_ps)
+OTUs = as(otu_table(web_green_19_ps), "matrix")
+if(taxa_are_rows(web_green_19_ps)){OTUs <- t(OTUs)}
+OTUs = as.data.frame(OTUs)
+web_green_19_simper <- simper(OTUs, web_green_19_ps@sam_data$subsample, permutations = 100)
+web_green_19_simper<-as.data.frame(web_green_19_simper$"1web_5green")
+relevant_web_green_19_simper<-subset(web_green_19_simper, web_green_19_simper$average > 0.009999999999 & web_green_19_simper$p < 0.050)
+
+web_pink_19_ps = merge_phyloseq(web_19_ps,pink_19_ps)
+OTUs = as(otu_table(web_pink_19_ps), "matrix")
+if(taxa_are_rows(web_pink_19_ps)){OTUs <- t(OTUs)}
+OTUs = as.data.frame(OTUs)
+web_pink_19_simper <- simper(OTUs, web_pink_19_ps@sam_data$subsample, permutations = 100)
+web_pink_19_simper<-as.data.frame(web_pink_19_simper$"1web_6pink")
+relevant_web_pink_19_simper<-subset(web_pink_19_simper, web_pink_19_simper$average > 0.009999999999 & web_pink_19_simper$p < 0.050)
+
+
+web_beige_19_ps = merge_phyloseq(web_19_ps,beige_19_ps)
+OTUs = as(otu_table(web_beige_19_ps), "matrix")
+if(taxa_are_rows(web_beige_19_ps)){OTUs <- t(OTUs)}
+OTUs = as.data.frame(OTUs)
+web_beige_19_simper <- simper(OTUs, web_beige_19_ps@sam_data$subsample, permutations = 100)
+web_beige_19_simper<-as.data.frame(web_beige_19_simper$"1web_7beige")
+relevant_web_beige_19_simper<-subset(web_beige_19_simper, web_beige_19_simper$average > 0.009999999999 & web_beige_19_simper$p < 0.050)
 
 tip_ridge_19_ps = merge_phyloseq(tip_19_ps,ridge_19_ps)
 OTUs = as(otu_table(tip_ridge_19_ps), "matrix")
@@ -379,14 +407,6 @@ green_31_ps<- subset_samples(bacteria_31_ps, subsample== "5green")
 pink_31_ps<- subset_samples(bacteria_31_ps, subsample== "6pink")
 beige_31_ps<- subset_samples(bacteria_31_ps, subsample== "7beige")
 
-tip_ridge_31_ps = merge_phyloseq(tip_31_ps,ridge_31_ps)
-OTUs = as(otu_table(tip_ridge_31_ps), "matrix")
-if(taxa_are_rows(tip_ridge_31_ps)){OTUs <- t(OTUs)}
-OTUs = as.data.frame(OTUs)
-tip_ridge_31_simper <- simper(OTUs, tip_ridge_31_ps@sam_data$subsample, permutations = 100)
-tip_ridge_31_simper<-as.data.frame(tip_ridge_31_simper$"2tip_3ridge")
-relevant_tip_ridge_31_simper<-subset(tip_ridge_31_simper, tip_ridge_31_simper$average > 0.009999999999 & tip_ridge_31_simper$p < 0.050)
-
 tip_brown_31_ps = merge_phyloseq(tip_31_ps,brown_31_ps)
 OTUs = as(otu_table(tip_brown_31_ps), "matrix")
 if(taxa_are_rows(tip_brown_31_ps)){OTUs <- t(OTUs)}
@@ -480,9 +500,9 @@ We will pull out those ASVs that differ between one or more of the communities c
 library("ggplot2")
 library("dplyr")
 
-simper_all_relevant_ps = prune_taxa(c("ASV1", "ASV2", "ASV3", "ASV4", "ASV5", "ASV6","ASV7","ASV8","ASV10","ASV11", "ASV12",  "ASV14", "ASV15", "ASV17","ASV19","ASV20", "ASV21", "ASV22","ASV27", "ASV38", "ASV40","ASV42", "ASV45","ASV51", "ASV63"), no_reps_ps)
+simper_all_relevant_ps = prune_taxa(c("ASV1", "ASV2", "ASV3", "ASV4", "ASV5", "ASV6","ASV7","ASV8","ASV10","ASV11", "ASV12",  "ASV14", "ASV17","ASV20", "ASV21", "ASV22","ASV27", "ASV38", "ASV40","ASV43", "ASV44","ASV51", "ASV63", "ASV188", "ASV331", "ASV449" ), no_reps_ps)
 simper_relevant_ps = subset_taxa(simper_all_relevant_ps, Phylum=="Cyanobacteria")
-
+#simper_relevant_ps = simper_all_relevant_ps
 OTU1 = as(otu_table(simper_relevant_ps), "matrix") 
 if(taxa_are_rows(simper_relevant_ps)){OTU1 <- t(OTU1)}
 
@@ -501,62 +521,102 @@ simper_relevant_mean<-ddply(simper_relevant_df,c("depth_subsample", "depth", "su
                 ASV3=mean(ASV3,na.rm=TRUE),
 
                 ASV4=mean(ASV4,na.rm=TRUE),
+                
+                #ASV5=mean(ASV5,na.rm=TRUE),
+                
+                #ASV6=mean(ASV6,na.rm=TRUE),
 
                 ASV7=mean(ASV7,na.rm=TRUE),
+                
+                #ASV8=mean(ASV8,na.rm=TRUE),
+                
+                #ASV10=mean(ASV10,na.rm=TRUE),
 
                 ASV11=mean(ASV11,na.rm=TRUE),
 
                 ASV12=mean(ASV12,na.rm=TRUE),
+                
+                #ASV14=mean(ASV14,na.rm=TRUE),
 
                 ASV17=mean(ASV17,na.rm=TRUE),
 
-                ASV20=mean(ASV20,na.rm=TRUE),
+                #ASV20=mean(ASV20,na.rm=TRUE),
+                
+                #ASV21=mean(ASV21,na.rm=TRUE),
                 
                 ASV22=mean(ASV22,na.rm=TRUE),
                 
-                ASV42=mean(ASV42,na.rm=TRUE),
+                #ASV27=mean(ASV27,na.rm=TRUE),
+                
+                #ASV38=mean(ASV38,na.rm=TRUE),
+                
+                #ASV40=mean(ASV40,na.rm=TRUE),
+                
+                #ASV43=mean(ASV43,na.rm=TRUE),
+                
+                #ASV44=mean(ASV44,na.rm=TRUE),
 
                 ASV51=mean(ASV51,na.rm=TRUE),
                 
-                ASV63=mean(ASV63,na.rm=TRUE))
+                ASV63=mean(ASV63,na.rm=TRUE),
+                
+                ASV188=mean(ASV188,na.rm=TRUE))
 
 simper_relevant_SE<-ddply(simper_relevant_df,c("depth_subsample", "depth", "subsample"),summarise,
                 N=sum(!is.na(ASV1)),
                 ASV1=sd(ASV1,na.rm=TRUE)/sqrt(N),
-                
+
                 ASV2=sd(ASV2,na.rm=TRUE)/sqrt(N),
-            
+
                 ASV3=sd(ASV3,na.rm=TRUE)/sqrt(N),
- 
+
                 ASV4=sd(ASV4,na.rm=TRUE)/sqrt(N),
-            
+                
+                #ASV5=sd(ASV5,na.rm=TRUE)/sqrt(N),
+                
+                #ASV6=sd(ASV6,na.rm=TRUE)/sqrt(N),
+
                 ASV7=sd(ASV7,na.rm=TRUE)/sqrt(N),
                 
+                #ASV8=sd(ASV8,na.rm=TRUE)/sqrt(N),
+                
+                #ASV10=sd(ASV10,na.rm=TRUE)/sqrt(N),
+
                 ASV11=sd(ASV11,na.rm=TRUE)/sqrt(N),
-                
+
                 ASV12=sd(ASV12,na.rm=TRUE)/sqrt(N),
-               
-                ASV17=sd(ASV17,na.rm=TRUE)/sqrt(N),
                 
-                ASV20=sd(ASV20,na.rm=TRUE)/sqrt(N),
+                #ASV14=sd(ASV14,na.rm=TRUE)/sqrt(N),
+
+                ASV17=sd(ASV17,na.rm=TRUE)/sqrt(N),
+
+                #ASV20=sd(ASV20,na.rm=TRUE)/sqrt(N),
+                
+                #ASV21=sd(ASV21,na.rm=TRUE)/sqrt(N),
                 
                 ASV22=sd(ASV22,na.rm=TRUE)/sqrt(N),
                 
-                ASV42=sd(ASV42,na.rm=TRUE)/sqrt(N),
+                #ASV27=sd(ASV27,na.rm=TRUE)/sqrt(N),
                 
+                #ASV38=sd(ASV38,na.rm=TRUE)/sqrt(N),
+                
+                #ASV40=sd(ASV40,na.rm=TRUE)/sqrt(N),
+                
+                #ASV43=sd(ASV43,na.rm=TRUE)/sqrt(N),
+                
+                #ASV44=sd(ASV44,na.rm=TRUE)/sqrt(N),
+
                 ASV51=sd(ASV51,na.rm=TRUE)/sqrt(N),
                 
-                ASV63=sd(ASV63,na.rm=TRUE)/sqrt(N))
-
-
-#remove web samples because we could not do statistics on them (only two samples, both with 2 replicates each)
-simper_relevant_mean<-simper_relevant_mean[c(2:13),]
-simper_relevant_SE<-simper_relevant_SE[c(2:13),]
+                ASV63=sd(ASV63,na.rm=TRUE)/sqrt(N),
+                
+                ASV188=sd(ASV188,na.rm=TRUE)/sqrt(N))
 ```
 now we plot. We will use different scales for different rows but I don't know how to do that here so we will generate multiple plots and combine them outside of R
 ```{r barplots}
-summary_mean_long <-gather(simper_relevant_mean,taxon, mean, ASV1:ASV63 ,factor_key = TRUE)
-summary_SE_long <-gather(simper_relevant_SE, taxon, SE, ASV1:ASV63 ,factor_key = TRUE)
+library(tidyr)
+summary_mean_long <-gather(simper_relevant_mean,taxon, mean, ASV1:ASV188 ,factor_key = TRUE)
+summary_SE_long <-gather(simper_relevant_SE, taxon, SE, ASV1:ASV188 ,factor_key = TRUE)
 summary_all_long<-summary_mean_long
 summary_all_long$SE<-summary_SE_long$SE
 
@@ -565,7 +625,7 @@ ggplot(summary_all_long, aes( x=depth, y=mean,fill=subsample,ymin=mean-SE, ymax=
   geom_bar(stat="identity",col="black", position=position_dodge()) + 
   facet_wrap(~taxon, ncol = 3, scales ="fixed") +
   geom_errorbar( aes(group=interaction(depth,subsample)), position=position_dodge()) + 
-  scale_fill_manual (values=c("burlywood2", "gray", "chocolate4", "olivedrab", "mediumorchid1", "bisque3"),labels=c("Tip", "Ridge", "Brown", "Green", "Pink", "Beige")) + 
+  scale_fill_manual (values=c("cornsilk4", "burlywood2", "gray", "chocolate4", "olivedrab", "mediumorchid1", "bisque3"),labels=c("Web","Tip", "Ridge", "Brown", "Green", "Pink", "Beige")) + 
   xlab("Depth") + 
   ylab ("Average Relative Abundance") 
 dev.off()
@@ -577,7 +637,7 @@ ggplot(summary_all_long, aes( x=depth, y=mean,fill=subsample,ymin=mean-SE, ymax=
   geom_errorbar( aes(group=interaction(depth,subsample)), position=position_dodge()) +
   scale_y_continuous(breaks= seq(0,0.1, 0.05), limits =c(0, 0.1))+ 
   scale_x_continuous(breaks = c(19, 31), labels = c("19" ,"31"))+
-  scale_fill_manual (values=c("burlywood2", "gray", "chocolate4", "olivedrab", "mediumorchid1", "bisque3"),labels=c("Tip", "Ridge", "Brown", "Green", "Pink", "Beige")) + 
+  scale_fill_manual (values=c("cornsilk4", "burlywood2", "gray", "chocolate4", "olivedrab", "mediumorchid1", "bisque3"),labels=c("Web","Tip", "Ridge", "Brown", "Green", "Pink", "Beige")) + 
   xlab("Depth") + 
   ylab ("Average Relative Abundance") 
 dev.off()
@@ -588,14 +648,14 @@ ggplot(summary_all_long, aes( x=depth, y=mean,fill=subsample,ymin=mean-SE, ymax=
   facet_wrap(~taxon, ncol = 3, scales ="fixed") +
   geom_errorbar( aes(group=interaction(depth,subsample)), position=position_dodge()) +
   scale_y_continuous(breaks= seq(0,0.1, 0.05), limits =c(0, 0.05))+ 
-  scale_fill_manual (values=c("burlywood2", "gray", "chocolate4", "olivedrab", "mediumorchid1", "bisque3"),labels=c("Tip", "Ridge", "Brown", "Green", "Pink", "Beige")) + 
+  scale_fill_manual (values=c("cornsilk4", "burlywood2", "gray", "chocolate4", "olivedrab", "mediumorchid1", "bisque3"),labels=c("Web", "Tip", "Ridge", "Brown", "Green", "Pink", "Beige")) + 
   xlab("Depth") + 
   ylab ("Average Relative Abundance") 
 dev.off()
 ```
 Now we will do an NMDS. We will generate an NMDS for the full data set so we can see how the 19 vs 31 meter samples compare and also one for each of the 19 and 31 meters depth suites of samples so we can examine how features compare to one another at each depth. 
 ```{r NMDS}
-V2013_relabund <- transform_sample_counts(V2013_bacteria, function(otu) otu/sum(otu))
+V2013_relabund <- transform_sample_counts(no_reps_ps, function(otu) otu/sum(otu))
 
 bacteria_19_ps<- subset_samples(V2013_relabund, depth=="19")
 bacteria_31_ps<- subset_samples(V2013_relabund, depth=="31")
@@ -610,7 +670,8 @@ ord.nmds.bray
 ord.nmds.bray_19
 ord.nmds.bray_31
 ```
-These are okay values, not great but not horrible either. 
+
+
 Now we can plot the ordination. We will plot each feature as a factet and colored and shaped by the depth and feature.  
 ```{r nmds plot}
 feature_labeller <- function(variable,value){
@@ -636,7 +697,7 @@ plot_ordination(V2013_relabund, ord.nmds.bray, color="depth_subsample", shape="d
     guides(color = guide_legend (title= "Feature"), shape = guide_legend(title="Depth"))
 dev.off()
 ```
-Calculate the influence of distance into the pinnacle on the location of points in the NMDS plot using vegan's envfit. I will map these onto the NMDS plots manually.
+Calculate the influence of relative distance into the pinnacle on the location of points in the NMDS plot using vegan's envfit. 
 ```{r envfit}
 nmds_19_envfit <- envfit(ord.nmds.bray_19$points, env = as.data.frame(bacteria_19_ps@sam_data$distance), perm = 999) 
 
@@ -665,4 +726,26 @@ plot_ordination(V2013_relabund, ord.nmds.bray_31, color="depth_subsample", shape
 
 dev.off()
 ```
-Fin
+
+Now we will make a barchart for the ordres of Cyanobacteria. Note that the colors differ between depths. We corrected this outside of R (i.e. we made it so the same orders were the same colors across both depths). 
+```{r cyanos bar}
+library(microViz)
+
+cyanos_ps = subset_taxa(V2013_relabund, Phylum=="Cyanobacteria")
+cyanos_glommed_ps<- tax_glom(cyanos_ps, "Order")
+cyanos_deep_ps<- subset_samples(cyanos_glommed_ps, depth_word== "deep")
+cyanos_shallow_ps<- subset_samples(cyanos_glommed_ps, depth_word== "shallow")
+
+pdf("CyanosBar.pdf")
+comp_barplot(cyanos_glommed_ps, tax_level = "Order", n_taxa=6, bar_outline_colour = NA, tax_transform_for_plot = "identity") + coord_flip()
+dev.off()
+pdf("CyanosBar_shallow.pdf")
+comp_barplot(cyanos_shallow_ps, tax_level = "Order", n_taxa=6, bar_outline_colour = NA, facet_by = "subsample", tax_transform_for_plot = "identity") + coord_flip()
+dev.off()
+
+pdf("CyanosBar_deep.pdf")
+comp_barplot(cyanos_deep_ps, tax_level = "Order", n_taxa=6, bar_outline_colour = NA, facet_by = "subsample", tax_transform_for_plot = "identity") + coord_flip()
+dev.off()
+
+
+```
